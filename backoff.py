@@ -111,9 +111,16 @@ class BackoffModel(ngram_chain.NGramModel):
 
                 if missing > 0:
                     parent_state = self.nodes[state[1:]]
+                    lower_prob = 0
                     for c, p in zip(parent_state.transitions,
                                     parent_state.probabilities):
-                        trans_probs[c] = trans_probs.get(c, 0) + p * missing
+                        if c not in trans_probs:
+                            lower_prob += p
+                    backoff_factor = missing / lower_prob
+                    for c, p in zip(parent_state.transitions,
+                                    parent_state.probabilities):
+                        if c not in trans_probs:
+                            trans_probs[c] = p * backoff_factor
 
                 trans_probs = sorted(trans_probs.items(),
                                      key=operator.itemgetter(1),
@@ -188,11 +195,19 @@ class LazyBackoff(model.Model):
         res = 0
         state, node = self.begin()
         for c in word + self.end:
+            last_node = None
             while True:  # break when we should stop backing off
                 count = node.get(c, 0) - leaveout
                 total = self.getcount(state) - leaveout
                 if state == self.start == self.end:
                     total /= 2
+
+                if last_node is not None:
+                    lower_sum = sum(cnt for c, cnt in node.items()
+                                    if last_node.get(c, 0) >= self.threshold)
+                    res += math.log2(1 - (lower_sum / total))
+                last_node = node
+
                 if count >= self.threshold or state == '':
                     break
                 passing = sum(ct for ct in node.values()
@@ -217,22 +232,29 @@ class LazyBackoff(model.Model):
         state, node = self.begin()
         word = ''
         while True:  # return when we find self.end
+            last_node = None
             while True:  # break when we should stop backing off
-                values = list(node.values())
-                cumsum = numpy.cumsum(values)
                 total = self.getcount(state)
                 if state == self.start == self.end:
                     total /= 2
-                idx = bisect.bisect_right(cumsum, random.randrange(total))
-                if idx < len(values):
-                    count = values[idx]
-                    if state == '' or count >= self.threshold:
-                        break
-                state, node = self.backoff(state)
-                passing = sum(ct for ct in values if ct >= self.threshold)
+
+                items = list(node.items())
+                if last_node is not None:
+                    items = [(c, cnt) for c, cnt in items if last_node.get(
+                        c, -1) < self.threshold]
+                    accum = sum(cnt for _, cnt in items)
+                    logprob += math.log2(accum / total)
+                last_node = node
+
+                c, count = random.choices(
+                    items, weights=[cnt for _, cnt in items])[0]
+                if state == '' or count >= self.threshold:
+                    break
+                passing = sum(ct for ct in node.values()
+                              if ct >= self.threshold)
                 logprob -= math.log2(1 - (passing / total))
+                state, node = self.backoff(state)
             logprob -= math.log2(count / total)
-            c = next(itertools.islice(node.keys(), idx, None))  # n-th elem
             if c == self.end:
                 return logprob, word
             word += c
