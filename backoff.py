@@ -239,16 +239,19 @@ class LazyBackoff(model.Model):
                     total /= 2
 
                 items = list(node.items())
+                diff = total - sum([cnt for _, cnt in items])
                 if last_node is not None:
                     items = [(c, cnt) for c, cnt in items if last_node.get(
                         c, -1) < self.threshold]
-                    accum = sum(cnt for _, cnt in items)
-                    logprob += math.log2(accum / total)
+                    lower_sum = sum(cnt for c, cnt in node.items()
+                                    if last_node.get(c, 0) >= self.threshold)
+                    logprob += math.log2(1 - (lower_sum / total))
+                items.append(('', diff))
                 last_node = node
 
                 c, count = random.choices(
                     items, weights=[cnt for _, cnt in items])[0]
-                if state == '' or count >= self.threshold:
+                if (state == '' or count >= self.threshold) and (c != ''):
                     break
                 passing = sum(ct for ct in node.values()
                               if ct >= self.threshold)
